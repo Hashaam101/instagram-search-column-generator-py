@@ -5,9 +5,8 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.styles.numbers import FORMAT_TEXT
 from openpyxl.utils import get_column_letter
 import os
-import time
-from tqdm import tqdm
 import platform
+from tqdm import tqdm
 
 # File paths
 INPUT_FILE = "input.xlsx"
@@ -55,24 +54,28 @@ def save_data(df):
         wb = openpyxl.load_workbook(OUTPUT_FILE)
         ws = wb.active
 
-        phone_col_idx = list(df.columns).index("Company_Phone") + 1
-        link_col_idx = list(df.columns).index("Instagram_link") + 1
+        headers = [cell.value for cell in ws[1]]
+        phone_col_idx = headers.index("Company_Phone") + 1
+        link_col_idx = headers.index("Instagram_link") + 1
 
         # Format phone column as text
         for row in range(2, ws.max_row + 1):
-            cell = ws.cell(row=row, column=phone_col_idx)
-            cell.number_format = FORMAT_TEXT
+            phone_cell = ws.cell(row=row, column=phone_col_idx)
+            phone_cell.number_format = FORMAT_TEXT
 
-        # Make Instagram links clickable
+        # Convert Instagram links into HYPERLINK formulas
         for row in range(2, ws.max_row + 1):
-            link = ws.cell(row=row, column=link_col_idx).value
-            if link:
-                ws.cell(row=row, column=link_col_idx).value = f'=HYPERLINK("{link}", "Instagram")'
+            cell = ws.cell(row=row, column=link_col_idx)
+            if cell.value and not str(cell.value).startswith("=HYPERLINK"):
+                cell.value = f'=HYPERLINK("{cell.value}", "Instagram")'
 
         # Highlight partial duplicates
         for dup in partial_duplicates:
             for row in range(2, ws.max_row + 1):
-                if ws[f"A{row}"].value == dup['name'] or ws[f"{get_column_letter(phone_col_idx)}{row}"].value == dup['phone']:
+                if (
+                    ws[f"A{row}"].value == dup['name'] or
+                    ws[f"{get_column_letter(phone_col_idx)}{row}"].value == dup['phone']
+                ):
                     cell = ws[f"{get_column_letter(phone_col_idx)}{row}"]
                     cell.font = bold_font
                     cell.fill = red_fill
@@ -115,7 +118,6 @@ def remove_duplicates(df):
     df.drop_duplicates(subset=['COMPANY_name', 'Company_Phone'], inplace=True)
     duplicates_removed = before - len(df)
 
-    # Detect partial duplicates
     name_dups = df[df.duplicated(['COMPANY_name'], keep=False)]
     phone_dups = df[df.duplicated(['Company_Phone'], keep=False)]
 
@@ -131,19 +133,22 @@ def remove_duplicates(df):
 
 
 def generate_instagram_links(df):
-    global instagram_found_count, instagram_fallback_count, has_changed
+    global instagram_fallback_count, has_changed
 
-    print("🔍 Generating Instagram Google search links...")
+    print("🔍 Generating Instagram search links...")
+    if 'Instagram_link' not in df.columns:
+        df['Instagram_link'] = ""
+
     links = []
-    for name in tqdm(df['COMPANY_name'], desc="Generating Instagram Google Search Links"):
+    for name in tqdm(df['COMPANY_name'], desc="Generating Instagram Search Links"):
         query = '+'.join(name.split())
-        link = f"https://www.google.com/search?q={query}+restaurant+hawaii+site:instagram.com"
+        link = f"https://www.instagram.com/search?q={query}+restaurant+hawaii"
         links.append(link)
         instagram_fallback_count += 1
 
     df['Instagram_link'] = links
     has_changed = True
-    print(f"🔗 {instagram_fallback_count} Instagram Google search links generated.")
+    print(f"🔗 {instagram_fallback_count} Instagram search links generated.")
     return df
 
 
