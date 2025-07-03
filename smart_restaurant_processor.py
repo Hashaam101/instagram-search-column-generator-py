@@ -142,7 +142,7 @@ def generate_instagram_links(df):
     links = []
     for name in tqdm(df['COMPANY_name'], desc="Generating Instagram Search Links"):
         query = '+'.join(name.split())
-        link = f"https://www.instagram.com/search?q={query}+restaurant+hawaii"
+        link = f"https://www.google.com/search?q={query}+restaurant+hawaii+site:instagram.com"
         links.append(link)
         instagram_fallback_count += 1
 
