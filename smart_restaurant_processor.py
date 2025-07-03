@@ -114,17 +114,23 @@ def normalize_phone(df):
 def remove_duplicates(df):
     global duplicates_removed, partial_duplicates, has_changed
 
-    before = len(df)
-    df.drop_duplicates(subset=['COMPANY_name', 'Company_Phone'], inplace=True)
-    duplicates_removed = before - len(df)
-
+    # Detect exact duplicates first (before dropping them)
+    exact_dups = df[df.duplicated(subset=['COMPANY_name', 'Company_Phone'], keep=False)]
+    duplicates_removed = len(exact_dups)
+    
+    # Detect partial duplicates before modifying df
     name_dups = df[df.duplicated(['COMPANY_name'], keep=False)]
     phone_dups = df[df.duplicated(['Company_Phone'], keep=False)]
 
-    for _, row in name_dups.iterrows():
-        partial_duplicates.append({'name': row['COMPANY_name'], 'phone': row['Company_Phone']})
-    for _, row in phone_dups.iterrows():
-        partial_duplicates.append({'name': row['COMPANY_name'], 'phone': row['Company_Phone']})
+    seen = set()
+    for _, row in pd.concat([name_dups, phone_dups]).iterrows():
+        key = (row['COMPANY_name'], row['Company_Phone'])
+        if key not in seen and key not in exact_dups[['COMPANY_name', 'Company_Phone']].apply(tuple, axis=1).values:
+            partial_duplicates.append({'name': row['COMPANY_name'], 'phone': row['Company_Phone']})
+            seen.add(key)
+
+    # Now drop the actual duplicates
+    df = df.drop_duplicates(subset=['COMPANY_name', 'Company_Phone'])
 
     has_changed = True
     print(f"✔ {duplicates_removed} exact duplicates removed.")
