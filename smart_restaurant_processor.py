@@ -69,7 +69,8 @@ def save_data(df):
         for row in range(2, ws.max_row + 1):
             cell = ws.cell(row=row, column=link_col_idx)
             if cell.value and not str(cell.value).startswith("=HYPERLINK"):
-                cell.value = f'=HYPERLINK("{cell.value}", "Instagram")'
+                cell.value = f'=HYPERLINK("{cell.value}", "{cell.value}")'
+
 
         # Highlight partial duplicates (red + bold)
         for dup in partial_duplicates:
