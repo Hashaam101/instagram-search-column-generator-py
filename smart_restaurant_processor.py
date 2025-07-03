@@ -7,6 +7,7 @@ from openpyxl.utils import get_column_letter
 import os
 import platform
 from tqdm import tqdm
+import unicodedata
 
 # File paths
 INPUT_FILE = "input.xlsx"
@@ -45,7 +46,7 @@ def load_data():
 
 
 def save_data(df):
-    df = df.sort_values(by="COMPANY_name")
+    df = df.sort_values(by="COMPANY_name", key=lambda x: x.str.lower())  # case-insensitive sort
     try:
         if os.path.exists(OUTPUT_FILE):
             os.remove(OUTPUT_FILE)
@@ -57,6 +58,7 @@ def save_data(df):
         headers = [cell.value for cell in ws[1]]
         phone_col_idx = headers.index("Company_Phone") + 1
         link_col_idx = headers.index("Instagram_link") + 1
+        name_col_idx = headers.index("COMPANY_name") + 1
 
         # Format phone column as text
         for row in range(2, ws.max_row + 1):
@@ -69,16 +71,28 @@ def save_data(df):
             if cell.value and not str(cell.value).startswith("=HYPERLINK"):
                 cell.value = f'=HYPERLINK("{cell.value}", "Instagram")'
 
-        # Highlight partial duplicates
+        # Highlight partial duplicates (red + bold)
         for dup in partial_duplicates:
             for row in range(2, ws.max_row + 1):
-                if (
-                    ws[f"A{row}"].value == dup['name'] or
-                    ws[f"{get_column_letter(phone_col_idx)}{row}"].value == dup['phone']
-                ):
-                    cell = ws[f"{get_column_letter(phone_col_idx)}{row}"]
-                    cell.font = bold_font
-                    cell.fill = red_fill
+                name = str(ws.cell(row=row, column=name_col_idx).value).strip()
+                phone = str(ws.cell(row=row, column=phone_col_idx).value).strip()
+                if name == dup['name'] or phone == dup['phone']:
+                    phone_cell = ws.cell(row=row, column=phone_col_idx)
+                    phone_cell.font = bold_font
+                    phone_cell.fill = red_fill
+
+        # Highlight name duplicates (orange) if not already in partial_duplicates
+        seen_names = {}
+        for row in range(2, ws.max_row + 1):
+            name = str(ws.cell(row=row, column=name_col_idx).value).strip().lower()
+            if name in seen_names:
+                # Highlight both rows
+                for r in [seen_names[name], row]:
+                    name_cell = ws.cell(row=r, column=name_col_idx)
+                    if name_cell.fill != red_fill:  # Don't override red
+                        name_cell.fill = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")
+            else:
+                seen_names[name] = row
 
         wb.save(OUTPUT_FILE)
     except Exception as e:
@@ -114,29 +128,60 @@ def normalize_phone(df):
 def remove_duplicates(df):
     global duplicates_removed, partial_duplicates, has_changed
 
-    # Detect exact duplicates first (before dropping them)
-    exact_dups = df[df.duplicated(subset=['COMPANY_name', 'Company_Phone'], keep=False)]
+    def normalize_phone(num):
+        try:
+            num = str(num).strip().replace(".0", "")
+            digits = ''.join(filter(str.isdigit, num))
+            if len(digits) == 10:
+                digits = '1' + digits
+            if not digits.startswith('1'):
+                digits = '1' + digits
+            parsed = phonenumbers.parse("+" + digits, 'US')
+            if phonenumbers.is_valid_number(parsed):
+                return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
+        except:
+            return str(num)
+        return str(num)
+
+    def normalize_name(name):
+        if not isinstance(name, str):
+            return ""
+        name = unicodedata.normalize("NFKD", name)  # Normalize unicode
+        name = name.lower().strip()
+        name = name.replace("’", "'").replace("‘", "'").replace("`", "'")
+        name = ''.join(c for c in name if not unicodedata.category(c).startswith("C"))  # Remove control chars
+        return name
+
+    # Create helper columns for normalized comparison
+    df['_NormalizedPhone'] = df['Company_Phone'].apply(normalize_phone)
+    df['_NormalizedName'] = df['COMPANY_name'].apply(normalize_name)
+
+    # Detect exact duplicates
+    exact_dups = df[df.duplicated(subset=['_NormalizedName', '_NormalizedPhone'], keep=False)]
     duplicates_removed = len(exact_dups)
-    
-    # Detect partial duplicates before modifying df
-    name_dups = df[df.duplicated(['COMPANY_name'], keep=False)]
-    phone_dups = df[df.duplicated(['Company_Phone'], keep=False)]
+    exact_keys = set(exact_dups[['_NormalizedName', '_NormalizedPhone']].apply(tuple, axis=1))
+
+    # Detect partials (same name or phone, but not both)
+    name_dups = df[df.duplicated(['_NormalizedName'], keep=False)]
+    phone_dups = df[df.duplicated(['_NormalizedPhone'], keep=False)]
 
     seen = set()
     for _, row in pd.concat([name_dups, phone_dups]).iterrows():
-        key = (row['COMPANY_name'], row['Company_Phone'])
-        if key not in seen and key not in exact_dups[['COMPANY_name', 'Company_Phone']].apply(tuple, axis=1).values:
+        key = (row['_NormalizedName'], row['_NormalizedPhone'])
+        if key not in seen and key not in exact_keys:
             partial_duplicates.append({'name': row['COMPANY_name'], 'phone': row['Company_Phone']})
             seen.add(key)
 
-    # Now drop the actual duplicates
-    df = df.drop_duplicates(subset=['COMPANY_name', 'Company_Phone'])
+    # Drop exact duplicates
+    df = df.drop_duplicates(subset=['_NormalizedName', '_NormalizedPhone'])
+
+    # Clean up helper columns
+    df.drop(columns=['_NormalizedName', '_NormalizedPhone'], inplace=True)
 
     has_changed = True
     print(f"✔ {duplicates_removed} exact duplicates removed.")
     print(f"⚠ {len(partial_duplicates)} partial duplicates found and marked.")
     return df
-
 
 def generate_instagram_links(df):
     global instagram_fallback_count, has_changed
