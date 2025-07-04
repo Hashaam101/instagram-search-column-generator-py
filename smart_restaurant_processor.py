@@ -13,6 +13,11 @@ import unicodedata
 INPUT_FILE = "input.xlsx"
 OUTPUT_FILE = "output.xlsx"
 
+# Column names (from original Excel headers)
+NAME_COL = "Company name <COMPANY name>"
+PHONE_COL = "Company Phone <Company Phone>"
+LINK_COL = "Instagram_link"
+
 # Global state
 has_changed = False
 instagram_found_count = 0
@@ -24,6 +29,7 @@ ran_actions = False
 
 # Formatting
 red_fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
+orange_fill = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")
 bold_font = Font(bold=True)
 
 
@@ -37,7 +43,7 @@ def clear_screen():
 def load_data():
     try:
         df = pd.read_excel(INPUT_FILE, dtype=str)
-        df.columns = [col.strip().replace("<", "").replace(">", "") for col in df.columns]
+        df.columns = [col.strip() for col in df.columns]
         df = df.dropna(how="all")
         return df
     except Exception as e:
@@ -46,7 +52,7 @@ def load_data():
 
 
 def save_data(df):
-    df = df.sort_values(by="COMPANY_name", key=lambda x: x.str.lower())  # case-insensitive sort
+    df = df.sort_values(by=NAME_COL, key=lambda x: x.str.lower())
     try:
         if os.path.exists(OUTPUT_FILE):
             os.remove(OUTPUT_FILE)
@@ -56,21 +62,20 @@ def save_data(df):
         ws = wb.active
 
         headers = [cell.value for cell in ws[1]]
-        phone_col_idx = headers.index("Company_Phone") + 1
-        link_col_idx = headers.index("Instagram_link") + 1
-        name_col_idx = headers.index("COMPANY_name") + 1
+        phone_col_idx = headers.index(PHONE_COL) + 1
+        link_col_idx = headers.index(LINK_COL) + 1
+        name_col_idx = headers.index(NAME_COL) + 1
 
         # Format phone column as text
         for row in range(2, ws.max_row + 1):
             phone_cell = ws.cell(row=row, column=phone_col_idx)
             phone_cell.number_format = FORMAT_TEXT
 
-        # Convert Instagram links into HYPERLINK formulas
+        # Convert Instagram links into HYPERLINK formulas (with visible URL)
         for row in range(2, ws.max_row + 1):
             cell = ws.cell(row=row, column=link_col_idx)
             if cell.value and not str(cell.value).startswith("=HYPERLINK"):
                 cell.value = f'=HYPERLINK("{cell.value}", "{cell.value}")'
-
 
         # Highlight partial duplicates (red + bold)
         for dup in partial_duplicates:
@@ -82,16 +87,15 @@ def save_data(df):
                     phone_cell.font = bold_font
                     phone_cell.fill = red_fill
 
-        # Highlight name duplicates (orange) if not already in partial_duplicates
+        # Highlight name duplicates (orange) if not already in red
         seen_names = {}
         for row in range(2, ws.max_row + 1):
             name = str(ws.cell(row=row, column=name_col_idx).value).strip().lower()
             if name in seen_names:
-                # Highlight both rows
                 for r in [seen_names[name], row]:
                     name_cell = ws.cell(row=r, column=name_col_idx)
-                    if name_cell.fill != red_fill:  # Don't override red
-                        name_cell.fill = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")
+                    if name_cell.fill != red_fill:
+                        name_cell.fill = orange_fill
             else:
                 seen_names[name] = row
 
@@ -119,7 +123,7 @@ def normalize_phone(df):
             return num
         return num
 
-    df['Company_Phone'] = df['Company_Phone'].astype(str).apply(lambda x: format_number(x))
+    df[PHONE_COL] = df[PHONE_COL].astype(str).apply(lambda x: format_number(x))
     phone_format_count = len(df)
     has_changed = True
     print(f"✔ {phone_format_count} phone numbers formatted.")
@@ -147,22 +151,19 @@ def remove_duplicates(df):
     def normalize_name(name):
         if not isinstance(name, str):
             return ""
-        name = unicodedata.normalize("NFKD", name)  # Normalize unicode
+        name = unicodedata.normalize("NFKD", name)
         name = name.lower().strip()
         name = name.replace("’", "'").replace("‘", "'").replace("`", "'")
-        name = ''.join(c for c in name if not unicodedata.category(c).startswith("C"))  # Remove control chars
+        name = ''.join(c for c in name if not unicodedata.category(c).startswith("C"))
         return name
 
-    # Create helper columns for normalized comparison
-    df['_NormalizedPhone'] = df['Company_Phone'].apply(normalize_phone)
-    df['_NormalizedName'] = df['COMPANY_name'].apply(normalize_name)
+    df['_NormalizedPhone'] = df[PHONE_COL].apply(normalize_phone)
+    df['_NormalizedName'] = df[NAME_COL].apply(normalize_name)
 
-    # Detect exact duplicates
     exact_dups = df[df.duplicated(subset=['_NormalizedName', '_NormalizedPhone'], keep=False)]
     duplicates_removed = len(exact_dups)
     exact_keys = set(exact_dups[['_NormalizedName', '_NormalizedPhone']].apply(tuple, axis=1))
 
-    # Detect partials (same name or phone, but not both)
     name_dups = df[df.duplicated(['_NormalizedName'], keep=False)]
     phone_dups = df[df.duplicated(['_NormalizedPhone'], keep=False)]
 
@@ -170,13 +171,10 @@ def remove_duplicates(df):
     for _, row in pd.concat([name_dups, phone_dups]).iterrows():
         key = (row['_NormalizedName'], row['_NormalizedPhone'])
         if key not in seen and key not in exact_keys:
-            partial_duplicates.append({'name': row['COMPANY_name'], 'phone': row['Company_Phone']})
+            partial_duplicates.append({'name': row[NAME_COL], 'phone': row[PHONE_COL]})
             seen.add(key)
 
-    # Drop exact duplicates
     df = df.drop_duplicates(subset=['_NormalizedName', '_NormalizedPhone'])
-
-    # Clean up helper columns
     df.drop(columns=['_NormalizedName', '_NormalizedPhone'], inplace=True)
 
     has_changed = True
@@ -188,17 +186,17 @@ def generate_instagram_links(df):
     global instagram_fallback_count, has_changed
 
     print("🔍 Generating Instagram search links...")
-    if 'Instagram_link' not in df.columns:
-        df['Instagram_link'] = ""
+    if LINK_COL not in df.columns:
+        df[LINK_COL] = ""
 
     links = []
-    for name in tqdm(df['COMPANY_name'], desc="Generating Instagram Search Links"):
+    for name in tqdm(df[NAME_COL], desc="Generating Instagram Search Links"):
         query = '+'.join(name.split())
         link = f"https://www.google.com/search?q={query}+restaurant+hawaii+site:instagram.com"
         links.append(link)
         instagram_fallback_count += 1
 
-    df['Instagram_link'] = links
+    df[LINK_COL] = links
     has_changed = True
     print(f"🔗 {instagram_fallback_count} Instagram search links generated.")
     return df
